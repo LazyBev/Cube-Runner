@@ -21,10 +21,160 @@ local gameMode = "regular" -- "regular" or "icey"
 local modeSelection = 1
 local modeOptions = {"Regular", "Icey", "Back"}
 local showingModeSelect = false
+local backgroundShader = ""
+local time = 0
+
+local playerData = {
+    {
+        name = "Blue Player",
+        color = {0.3, 0.7, 1},
+        colorName = "blue",
+        keybinds = {up = "w", down = "s", left = "a", right = "d", dash = "space"}
+    },
+    {
+        name = "Red Player",
+        color = {1, 0.3, 0.3},
+        colorName = "red",
+        keybinds = {up = "i", down = "k", left = "j", right = "l", dash = ";"}
+    }
+}
+
+function createBackgroundShader()
+    local vertexCode = [[
+        vec4 position(mat4 transform_projection, vec4 vertex_position) {
+            return transform_projection * vertex_position;
+        }
+    ]]
+
+    local fragmentCode = [[
+        uniform float time;
+        uniform vec2 resolution;
+
+        // Hash function for pseudo-random values
+        float hash(vec2 p) {
+            return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+        }
+
+        // Noise function
+        float noise(vec2 p) {
+            vec2 i = floor(p);
+            vec2 f = fract(p);
+
+            float a = hash(i);
+            float b = hash(i + vec2(1.0, 0.0));
+            float c = hash(i + vec2(0.0, 1.0));
+            float d = hash(i + vec2(1.0, 1.0));
+
+            vec2 u = f * f * (3.0 - 2.0 * f);
+            return mix(a, b, u.x) + (c - a) * u.y * (1.0 - u.x) + (d - b) * u.x * u.y;
+        }
+
+        // Fractal noise
+        float fbm(vec2 p) {
+            float value = 0.0;
+            float amplitude = 0.5;
+            for (int i = 0; i < 6; i++) {
+                value += amplitude * noise(p);
+                p *= 2.0;
+                amplitude *= 0.5;
+            }
+            return value;
+        }
+
+        vec4 effect(vec4 color, Image texture, vec2 texture_coords, vec2 screen_coords) {
+            vec2 uv = screen_coords / resolution;
+            vec2 center = vec2(0.5, 0.5);
+
+            // Create moving UV coordinates
+            vec2 movingUV = uv + vec2(sin(time * 0.3), cos(time * 0.2)) * 0.1;
+
+            // Multiple layers of animated patterns
+            float layer1 = fbm(movingUV * 3.0 + time * 0.5);
+            float layer2 = fbm(movingUV * 6.0 - time * 0.3);
+            float layer3 = fbm(movingUV * 12.0 + time * 0.8);
+
+            // Swirling pattern
+            float angle = atan(uv.y - center.y, uv.x - center.x);
+            float radius = length(uv - center);
+            float spiral = sin(angle * 4.0 + radius * 12.0 - time * 2.0) * 0.5 + 0.5;
+
+            // Pulsing rings
+            float rings = sin(radius * 20.0 - time * 3.0) * 0.3 + 0.7;
+
+            // Flowing waves across the screen
+            float wave1 = sin(uv.x * 8.0 + time * 1.5) * 0.2;
+            float wave2 = cos(uv.y * 6.0 - time * 2.0) * 0.15;
+            float crossWave = sin((uv.x + uv.y) * 10.0 + time * 2.5) * 0.1;
+
+            // Combine all patterns
+            float combined = layer1 * 0.4 + layer2 * 0.3 + layer3 * 0.2 +
+                           spiral * 0.3 + rings * 0.2 +
+                           (wave1 + wave2 + crossWave) * 0.5;
+
+            // Dynamic color palette that shifts over time
+            vec3 color1 = vec3(0.1 + sin(time * 0.5) * 0.1,
+                              0.2 + cos(time * 0.3) * 0.1,
+                              0.4 + sin(time * 0.7) * 0.2);
+            vec3 color2 = vec3(0.3 + cos(time * 0.4) * 0.2,
+                              0.1 + sin(time * 0.6) * 0.1,
+                              0.5 + cos(time * 0.8) * 0.15);
+            vec3 color3 = vec3(0.2 + sin(time * 0.9) * 0.15,
+                              0.3 + cos(time * 0.2) * 0.2,
+                              0.6 + sin(time * 0.4) * 0.1);
+
+            // Mix colors based on the combined pattern
+            vec3 finalColor = mix(color1, color2, combined);
+            finalColor = mix(finalColor, color3, layer3 * 0.6);
+
+            // Add brightness variations
+            finalColor *= (0.8 + combined * 0.4);
+
+            // Animated sparkles/stars
+            vec2 starUV = floor(uv * 80.0) / 80.0;
+            float starNoise = hash(starUV + floor(time * 2.0));
+            if (starNoise > 0.97) {
+                float sparkleIntensity = sin(time * 10.0 + starNoise * 100.0) * 0.5 + 0.5;
+                finalColor += vec3(0.2, 0.3, 0.6) * sparkleIntensity * 0.8;
+            }
+
+            // Edge vignette effect
+            float vignette = 1.0 - pow(length(uv - center) * 1.2, 2.0);
+            finalColor *= vignette;
+
+            // Subtle screen-wide pulse
+            float pulse = (sin(time * 1.2) + sin(time * 1.7) + sin(time * 2.1)) * 0.02 + 1.0;
+            finalColor *= pulse;
+
+            return vec4(finalColor, 1.0);
+        }
+    ]]
+
+    backgroundShader = love.graphics.newShader(fragmentCode, vertexCode)
+end
+
+function drawBackground()
+    if backgroundShader then
+        love.graphics.setShader(backgroundShader)
+        backgroundShader:send("time", time)
+        backgroundShader:send("resolution", {love.graphics.getWidth(), love.graphics.getHeight()})
+
+        -- Draw a fullscreen rectangle
+        love.graphics.setColor(1, 1, 1, 1)
+        love.graphics.rectangle("fill", 0, 0, love.graphics.getWidth(), love.graphics.getHeight())
+
+        love.graphics.setShader()
+    else
+        -- Fallback if shader fails
+        love.graphics.setColor(0.1, 0.1, 0.2)
+        love.graphics.rectangle("fill", 0, 0, love.graphics.getWidth(), love.graphics.getHeight())
+    end
+end
 
 function drawControlsScreen()
     local centerX = love.graphics.getWidth() / 2
     local centerY = love.graphics.getHeight() / 2
+
+    drawBackground()
 
     love.graphics.setColor(0, 0, 0, 0.8)
     love.graphics.rectangle("fill", 0, 0, love.graphics.getWidth(), love.graphics.getHeight())
@@ -66,24 +216,12 @@ local colorPresets = {
     {name = "Pink", color = {1, 0.4, 0.8}}
 }
 
-local playerData = {
-    {
-        name = "Blue Player",
-        color = {0.3, 0.7, 1},
-        colorName = "blue",
-        keybinds = {up = "w", down = "s", left = "a", right = "d", dash = "space"}
-    },
-    {
-        name = "Red Player",
-        color = {1, 0.3, 0.3},
-        colorName = "red",
-        keybinds = {up = "i", down = "k", left = "j", right = "l", dash = ";"}
-    }
-}
-
 function main()
     -- Initialize game state
     initializeGame()
+
+    -- Create background shader
+    createBackgroundShader()
 
     -- Start the main game loop (LÖVE2D handles this automatically)
     print("Cube Dash Battle initialized successfully!")
@@ -564,10 +702,12 @@ function updateParticles(dt)
 end
 
 function love.draw()
-    if gameState == "menu" then
+     if gameState == "menu" then
+        drawBackground()
         drawMenu()
         return
-    elseif gameState == "options" then
+     elseif gameState == "options" then
+        drawBackground()
         drawOptionsMenu()
         return
     elseif gameState == "customize_p1" or gameState == "customize_p2" then
